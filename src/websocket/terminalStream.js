@@ -147,11 +147,22 @@ async function triggerExtraction(session, state) {
         projectPath: session.projectPath
       });
 
-      // Store extracted messages
+      // Store extracted messages and broadcast to connected clients
       if (extracted && Array.isArray(extracted.messages)) {
+        const wsHandler = require('./handler');
         for (const msg of extracted.messages) {
           if (msg.role && msg.content) {
             await session.storeMessage(msg.role, msg.content);
+
+            // Broadcast clean message to frontend for chat display
+            wsHandler.broadcast(session.projectPath, {
+              type: 'conversation_message',
+              id: `${msg.role}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              user_id: msg.role === 'assistant' ? 'claude' : 'user',
+              user_name: msg.role === 'assistant' ? 'Claude' : 'You',
+              content: msg.content,
+              created_at: new Date().toISOString()
+            });
           }
         }
       }
