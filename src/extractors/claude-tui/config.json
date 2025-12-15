@@ -1,0 +1,17 @@
+{
+  "name": "claude-tui",
+  "displayName": "Claude TUI Extractor",
+  "description": "Extracts human/assistant messages from Claude Code terminal output",
+  "enabled": true,
+  "priority": 100,
+  "triggers": [
+    "Human:",
+    "Assistant:",
+    "Claude",
+    "Thinking...",
+    "Using tool:"
+  ],
+  "scripts": {
+    "extractor": "extractor.js"
+  }
+}

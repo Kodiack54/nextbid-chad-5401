@@ -1,0 +1,18 @@
+{
+  "name": "bash-output",
+  "displayName": "Bash Output Extractor",
+  "description": "Extracts meaningful information from bash command output",
+  "enabled": true,
+  "priority": 50,
+  "triggers": [
+    "$",
+    "npm",
+    "git",
+    "node",
+    "error",
+    "warning"
+  ],
+  "scripts": {
+    "extractor": "extractor.js"
+  }
+}
