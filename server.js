@@ -25,6 +25,9 @@ const SUSAN_URL = process.env.SUSAN_URL || 'http://localhost:5403';
 // Multi-source watcher
 const sourceWatcher = require('./src/services/sourceWatcher');
 
+// Cataloger - extracts knowledge every 30 min and sends to Susan
+const cataloger = require('./src/services/cataloger');
+
 // Supabase connection
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -461,6 +464,36 @@ app.get('/api/sources', (req, res) => {
 });
 
 // ============================================
+// CATALOGER API - Manual trigger for Susan pipeline
+// ============================================
+
+// Trigger cataloger now (for manual runs or DocWorker)
+app.post('/api/catalog/trigger', async (req, res) => {
+  try {
+    console.log('[Chad] Manual catalog trigger received');
+    await cataloger.runCatalog();
+    res.json({
+      success: true,
+      message: 'Catalog cycle completed',
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('[Chad] Manual catalog trigger failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Catalog a specific session
+app.post('/api/catalog/session/:id', async (req, res) => {
+  try {
+    const result = await cataloger.catalogNow(req.params.id);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================
 // CHAT - Direct conversation with Chad
 // ============================================
 
@@ -541,6 +574,14 @@ server.listen(PORT, async () => {
     console.error('[Chad] Failed to initialize source watcher:', err.message);
   }
 
+  // Start cataloger (runs every 30 min, extracts knowledge, sends to Susan)
+  try {
+    cataloger.start();
+    console.log('[Chad] Cataloger started (runs every 30 min)');
+  } catch (err) {
+    console.error('[Chad] Failed to start cataloger:', err.message);
+  }
+
   console.log(`
 ====================================
   Chad - AI Team Transcriber
@@ -557,6 +598,10 @@ server.listen(PORT, async () => {
     POST /api/message
     POST /api/chat
     GET  /api/recent
+
+  Cataloger (extracts knowledge → sends to Susan):
+    POST /api/catalog/trigger       - Run catalog cycle now
+    POST /api/catalog/session/:id   - Catalog specific session
 
   Source Watcher:
     GET  /api/sources           - List sources
