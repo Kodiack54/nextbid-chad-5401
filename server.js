@@ -22,6 +22,9 @@ app.use(express.json());
 const PORT = process.env.PORT || 5401;
 const SUSAN_URL = process.env.SUSAN_URL || 'http://localhost:5403';
 
+// Multi-source watcher
+const sourceWatcher = require('./src/services/sourceWatcher');
+
 // Supabase connection
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -259,13 +262,17 @@ wss.on('connection', async (ws, req) => {
       if (msg.type === 'output') {
         // Terminal output from Claude
         session.appendOutput(msg.data);
+        // Also feed into source watcher for external Claude buffer
+        sourceWatcher.appendExternalClaude(msg.data);
       } else if (msg.type === 'user_input') {
         // User input (from chat or terminal)
         session.storeMessage('user', msg.content);
+        sourceWatcher.appendExternalClaude(`[USER] ${msg.content}\n`);
       }
     } catch (err) {
       // Might be raw text
       session.appendOutput(data.toString());
+      sourceWatcher.appendExternalClaude(data.toString());
     }
   });
 
@@ -401,6 +408,59 @@ app.get('/api/recent', async (req, res) => {
 });
 
 // ============================================
+// SOURCE WATCHER API - Multi-source monitoring
+// ============================================
+
+// Get source watcher status
+app.get('/api/sources/status', (req, res) => {
+  res.json({
+    success: true,
+    sources: sourceWatcher.getStatus()
+  });
+});
+
+// Get pending dumps for Susan to process
+app.get('/api/sources/pending', async (req, res) => {
+  try {
+    const pending = await sourceWatcher.getPendingDumps();
+    res.json({
+      success: true,
+      pending,
+      count: pending.length
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Force dump a specific source (manual trigger)
+app.post('/api/sources/dump/:sourceId', async (req, res) => {
+  try {
+    const sessionId = await sourceWatcher.forceDump(req.params.sourceId);
+    res.json({
+      success: true,
+      sessionId,
+      message: sessionId ? 'Dump created' : 'No content to dump'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List available sources
+app.get('/api/sources', (req, res) => {
+  res.json({
+    success: true,
+    sources: Object.values(sourceWatcher.SOURCES).map(s => ({
+      id: s.id,
+      name: s.name,
+      description: s.description,
+      dumpSchedule: s.dumpMinutes.map(m => `:${m.toString().padStart(2, '0')}`).join(', ')
+    }))
+  });
+});
+
+// ============================================
 // CHAT - Direct conversation with Chad
 // ============================================
 
@@ -472,7 +532,15 @@ Keep responses concise and helpful. You can tell the user about recent sessions,
 // Start Server
 // ============================================
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
+  // Initialize source watcher
+  try {
+    await sourceWatcher.initialize();
+    console.log('[Chad] Multi-source watcher initialized');
+  } catch (err) {
+    console.error('[Chad] Failed to initialize source watcher:', err.message);
+  }
+
   console.log(`
 ====================================
   Chad - AI Team Transcriber
@@ -487,8 +555,19 @@ server.listen(PORT, () => {
     GET  /api/sessions
     GET  /api/sessions/:id/messages
     POST /api/message
-    POST /api/chat              <-- NEW: Chat with Chad
+    POST /api/chat
     GET  /api/recent
+
+  Source Watcher:
+    GET  /api/sources           - List sources
+    GET  /api/sources/status    - Watcher status
+    GET  /api/sources/pending   - Pending dumps for Susan
+    POST /api/sources/dump/:id  - Force dump a source
+
+  Dump Schedule:
+    :00, :30 - External Claude (local terminals)
+    :10, :40 - Chat systems (Susan + Chad)
+    :20, :50 - Internal Claude (Server :5400)
 
   Ready to transcribe Claude sessions.
 ====================================
