@@ -94,6 +94,11 @@ async function handleMessage(ws, message, projectPath, userId) {
       await handleSessionEnd(ws, payload, projectPath);
       break;
 
+    case 'message':
+      // Handle messages from chad-scribe hook (external Claude Code)
+      await handleExternalMessage(ws, message, projectPath, userId);
+      break;
+
     case 'ping':
       ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
       break;
@@ -211,3 +216,55 @@ module.exports = {
   broadcast,
   getConnectionCount
 };
+
+/**
+ * Handle external messages from chad-scribe hook
+ * These come from external Claude Code instances
+ */
+async function handleExternalMessage(ws, message, projectPath, userId) {
+  const { role, content, source, hook, ts } = message;
+  
+  logger.info('External message received', { 
+    projectPath, 
+    role, 
+    source: source || 'unknown',
+    hook,
+    contentLength: content?.length || 0
+  });
+
+  try {
+    // Get or create session for this project
+    let session = sessionManager.getActiveSessionForProject(projectPath);
+    if (!session) {
+      session = await sessionManager.createSession(projectPath, userId, {
+        source_type: 'external',
+        source_name: source || 'claude-code-external'
+      });
+      logger.info('Created session for external source', { 
+        sessionId: session.sessionId, 
+        projectPath 
+      });
+    }
+
+    // Add message to session
+    if (session && content) {
+      await session.storeMessage(role || 'unknown', content);
+    }
+
+    ws.send(JSON.stringify({
+      type: 'message_received',
+      sessionId: session?.sessionId,
+      timestamp: Date.now()
+    }));
+  } catch (err) {
+    logger.error('Failed to handle external message', { 
+      error: err.message, 
+      projectPath 
+    });
+    ws.send(JSON.stringify({
+      type: 'error',
+      message: 'Failed to process message',
+      error: err.message
+    }));
+  }
+}

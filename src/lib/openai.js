@@ -1,11 +1,12 @@
 /**
  * Chad's OpenAI Client
- * Wrapper for OpenAI API with retry and error handling
+ * Wrapper for OpenAI API with retry, error handling, and USAGE TRACKING
  */
 
 const OpenAI = require('openai');
 const config = require('./config');
 const { Logger } = require('./logger');
+const { logOpenAIUsage } = require('./usageLogger');
 
 const logger = new Logger('Chad:OpenAI');
 
@@ -30,6 +31,7 @@ function getClient() {
  */
 async function extractConversation(terminalOutput, options = {}) {
   const client = getClient();
+  const startTime = Date.now();
 
   try {
     const response = await client.chat.completions.create({
@@ -65,6 +67,9 @@ Keep:
       temperature: options.temperature || 0.1
     });
 
+    // Log usage to database
+    await logOpenAIUsage(response, 'extraction', startTime);
+
     const result = JSON.parse(response.choices[0].message.content);
     return result.messages || [];
   } catch (error) {
@@ -78,6 +83,7 @@ Keep:
  */
 async function chat(message, context = {}) {
   const client = getClient();
+  const startTime = Date.now();
 
   try {
     const response = await client.chat.completions.create({
@@ -107,6 +113,9 @@ Keep responses concise and helpful.`
       max_tokens: 500,
       temperature: 0.7
     });
+
+    // Log usage to database
+    await logOpenAIUsage(response, 'chat', startTime);
 
     return response.choices[0].message.content;
   } catch (error) {

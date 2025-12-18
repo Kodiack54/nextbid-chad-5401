@@ -10,7 +10,8 @@
 require('dotenv').config();
 const express = require('express');
 const { WebSocketServer, WebSocket } = require('ws');
-const { createClient } = require('@supabase/supabase-js');
+// Using local PostgreSQL
+const supabase = require('../shared/db');
 const OpenAI = require('openai');
 const cors = require('cors');
 const http = require('http');
@@ -29,10 +30,6 @@ const sourceWatcher = require('./src/services/sourceWatcher');
 const cataloger = require('./src/services/cataloger');
 
 // Supabase connection
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
-);
 
 // OpenAI for extraction
 const openai = new OpenAI({

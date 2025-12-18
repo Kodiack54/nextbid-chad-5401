@@ -39,7 +39,7 @@ const SOURCES = {
     id: 'internal_claude',
     name: 'Internal Claude (Server)',
     type: 'websocket',
-    url: process.env.CLAUDE_SERVER_WS || 'ws://localhost:5400',
+    url: process.env.CLAUDE_SERVER_WS || 'ws://localhost:5400?mode=monitor',
     dumpMinutes: [20, 50],
     description: 'Server-side Claude terminal at :5400'
   }
@@ -118,6 +118,18 @@ function connectToInternalClaude() {
       });
 
       ws.on('message', (data) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.type === 'monitor_output' && msg.data) {
+            buffer.append(msg.data);
+            logger.debug('Monitor output received', { sessionId: msg.sessionId, dataLen: msg.data.length });
+            return;
+          } else if (msg.type === 'monitor_connected') {
+            logger.info('Connected as monitor to Server Claude', { activeSessions: msg.activeSessions });
+            return;
+          }
+        } catch {}
+        // Original handler below
         try {
           const msg = JSON.parse(data.toString());
           if (msg.type === 'output' && msg.data) {
@@ -218,6 +230,7 @@ async function performDump(sourceId, sourceName) {
     // Create session record
     const { data: session, error: sessionError } = await from('dev_ai_sessions')
       .insert({
+        project_path: '/var/www/NextBid_Dev/dev-studio-5000',
         source_type: sourceId,
         source_name: sourceName,
         status: 'pending_review',
@@ -230,11 +243,20 @@ async function performDump(sourceId, sourceName) {
 
     if (sessionError) throw sessionError;
 
-    logger.info('Dump created', {
+    // Run extraction on the raw content
+    const extractionStore = require('./extractionStore');
+    const extractions = await extractionStore.extractAndStoreFromDump(
+      session.id, 
+      '/var/www/NextBid_Dev/dev-studio-5000',
+      content
+    );
+
+    logger.info('Dump created with extractions', {
       sessionId: session.id,
       source: sourceName,
       contentLength: content.length,
-      messageCount: count
+      messageCount: count,
+      extractions
     });
 
     // Notify Susan that there's a new dump to process

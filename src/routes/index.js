@@ -9,6 +9,8 @@ const healthRoutes = require('./health');
 const sessionsRoutes = require('./sessions');
 const chatRoutes = require('./chat');
 const catalogRoutes = require('./catalog');
+const sourcesRoutes = require('./sources');
+const extractionsRoutes = require('./extractions');
 
 const app = express();
 app.use(cors());
@@ -19,5 +21,7 @@ app.use('/', healthRoutes);
 app.use('/api', sessionsRoutes);
 app.use('/api', chatRoutes);
 app.use('/api', catalogRoutes);
+app.use('/api/sources', sourcesRoutes);
+app.use('/api/extractions', extractionsRoutes);
 
 module.exports = app;

@@ -229,3 +229,37 @@ router.get('/recent', async (req, res) => {
 });
 
 module.exports = router;
+
+// Sessions for UI (with proper format)
+router.get('/sessions/recent', async (req, res) => {
+  const limit = parseInt(req.query.limit) || 20;
+  
+  try {
+    const { data, error } = await from('dev_ai_sessions')
+      .select('id, project_path, started_at, ended_at, status, source_type, source_name, message_count, raw_content')
+      .order('started_at', { ascending: false })
+      .limit(limit);
+
+    if (error) throw error;
+    
+    // Format for UI
+    const sessions = (data || []).map(s => ({
+      id: s.id,
+      title: s.source_name || s.source_type || 'Session',
+      status: s.status,
+      started_at: s.started_at,
+      ended_at: s.ended_at,
+      source_type: s.source_type,
+      source_name: s.source_name,
+      message_count: s.message_count || 0,
+      project_path: s.project_path,
+      needs_review: s.status === 'pending_review',
+      processed_by_susan: s.status === 'processed'
+    }));
+
+    res.json({ success: true, sessions });
+  } catch (err) {
+    logger.error('Failed to get recent sessions', { error: err.message });
+    res.status(500).json({ success: false, error: err.message });
+  }
+});

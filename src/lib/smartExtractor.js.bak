@@ -1,0 +1,242 @@
+/**
+ * Chad Smart Extractor
+ * Enhanced AI-powered extraction that understands context and relationships
+ */
+
+const { chat } = require('./openai');
+const { Logger } = require('./logger');
+
+const logger = new Logger('Chad:SmartExtractor');
+
+/**
+ * Build a smart extraction prompt that captures deeper meaning
+ */
+function buildExtractionPrompt(conversationText, projectPath, previousContext = null) {
+  return `You are Chad, an AI assistant specialized in understanding development conversations.
+Your job is to extract MEANINGFUL information that helps the team understand what happened and why.
+
+PROJECT: ${projectPath}
+
+${previousContext ? `PREVIOUS SESSION CONTEXT:\n${previousContext}\n` : ''}
+
+CONVERSATION TO ANALYZE:
+${conversationText.slice(0, 15000)}
+
+EXTRACTION INSTRUCTIONS:
+Think deeply about this conversation. Don't just list surface-level items.
+Ask yourself:
+- What was the developer trying to accomplish? (the goal)
+- What problems did they encounter? (the obstacles)
+- What solutions were found? (the breakthroughs)
+- What decisions were made and WHY? (the reasoning)
+- What's still unfinished? (the continuity)
+
+Extract as JSON:
+
+{
+  "sessionSummary": {
+    "workType": "feature|bugfix|refactor|research|config|deployment|planning",
+    "mainGoal": "What was the primary objective of this session?",
+    "outcome": "success|partial|blocked|ongoing",
+    "keyInsight": "The most important thing learned or accomplished"
+  },
+  
+  "problems": [
+    {
+      "description": "What went wrong or was challenging",
+      "rootCause": "Why it happened (if discovered)",
+      "solution": "How it was fixed (if fixed)",
+      "status": "fixed|workaround|unresolved",
+      "relatedFiles": ["files involved"]
+    }
+  ],
+  
+  "decisions": [
+    {
+      "what": "The decision made",
+      "why": "The reasoning behind it",
+      "alternatives": "What other options were considered",
+      "impact": "What this affects going forward"
+    }
+  ],
+  
+  "codeChanges": [
+    {
+      "file": "path/to/file",
+      "action": "created|modified|deleted|renamed",
+      "purpose": "WHY this change was made",
+      "details": "Key changes (functions added, logic modified, etc.)"
+    }
+  ],
+  
+  "discoveries": [
+    {
+      "category": "architecture|pattern|gotcha|optimization|security|integration",
+      "title": "Short title",
+      "insight": "What was learned",
+      "applicability": "When this knowledge is useful"
+    }
+  ],
+  
+  "todos": [
+    {
+      "task": "What needs to be done",
+      "context": "Why it's needed",
+      "priority": "high|medium|low",
+      "blockedBy": "What's blocking this (if anything)",
+      "relatedTo": "Related feature or component"
+    }
+  ],
+  
+  "completedItems": [
+    {
+      "task": "What was finished",
+      "verifiedBy": "How we know it's done (test passed, build succeeded, etc.)"
+    }
+  ],
+  
+  "dependencies": [
+    {
+      "type": "needs|blocks|relates",
+      "item": "What depends on what",
+      "status": "resolved|pending"
+    }
+  ],
+  
+  "continuity": {
+    "inProgress": "What's actively being worked on",
+    "nextSteps": ["Logical next actions"],
+    "blockers": ["What's preventing progress"],
+    "questionsOpen": ["Unanswered questions"]
+  }
+}
+
+IMPORTANT:
+- Be specific, not generic. "Fixed the bug" is bad. "Fixed UUID validation error in usageLogger.js line 45" is good.
+- Capture the WHY, not just the WHAT
+- Include file paths when mentioned
+- Note relationships between items
+- Flag anything that seems important for future sessions
+
+Return valid JSON only.`;
+}
+
+/**
+ * Extract smart insights from conversation
+ */
+async function extractSmart(conversationText, projectPath, previousContext = null) {
+  const prompt = buildExtractionPrompt(conversationText, projectPath, previousContext);
+  
+  try {
+    const response = await chat(prompt, { 
+      extractionMode: true,
+      maxTokens: 4000  // Allow more detailed extraction
+    });
+    
+    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const extracted = JSON.parse(jsonMatch[0]);
+      
+      // Validate and clean up
+      return validateExtraction(extracted);
+    }
+    
+    logger.warn('No JSON found in extraction response');
+    return null;
+  } catch (err) {
+    logger.error('Smart extraction failed', { error: err.message });
+    return null;
+  }
+}
+
+/**
+ * Validate and normalize extraction output
+ */
+function validateExtraction(data) {
+  // Ensure all arrays exist
+  const defaults = {
+    sessionSummary: {
+      workType: 'unknown',
+      mainGoal: '',
+      outcome: 'ongoing',
+      keyInsight: ''
+    },
+    problems: [],
+    decisions: [],
+    codeChanges: [],
+    discoveries: [],
+    todos: [],
+    completedItems: [],
+    dependencies: [],
+    continuity: {
+      inProgress: '',
+      nextSteps: [],
+      blockers: [],
+      questionsOpen: []
+    }
+  };
+  
+  return {
+    ...defaults,
+    ...data,
+    sessionSummary: { ...defaults.sessionSummary, ...data.sessionSummary },
+    continuity: { ...defaults.continuity, ...data.continuity }
+  };
+}
+
+/**
+ * Convert smart extraction to Susan's expected format
+ * (Backward compatible with existing catalog endpoint)
+ */
+function toSusanFormat(smartData) {
+  return {
+    // Map to existing Susan format
+    todos: (smartData.todos || []).map(t => ({
+      title: t.task,
+      description: t.context,
+      priority: t.priority || 'medium',
+      blockedBy: t.blockedBy,
+      relatedTo: t.relatedTo
+    })),
+    
+    completedTodos: (smartData.completedItems || []).map(c => ({
+      title: c.task,
+      verifiedBy: c.verifiedBy
+    })),
+    
+    decisions: (smartData.decisions || []).map(d => ({
+      title: d.what,
+      rationale: d.why,
+      alternatives: d.alternatives,
+      impact: d.impact
+    })),
+    
+    knowledge: (smartData.discoveries || []).map(d => ({
+      category: d.category,
+      title: d.title,
+      summary: d.insight,
+      applicability: d.applicability
+    })),
+    
+    codeChanges: smartData.codeChanges || [],
+    
+    bugs: (smartData.problems || []).filter(p => p.status !== 'fixed').map(p => ({
+      title: p.description,
+      severity: 'medium',
+      status: p.status === 'unresolved' ? 'open' : 'in_progress',
+      rootCause: p.rootCause,
+      relatedFiles: p.relatedFiles
+    })),
+    
+    // New fields Susan should learn to handle
+    sessionSummary: smartData.sessionSummary,
+    continuity: smartData.continuity,
+    dependencies: smartData.dependencies
+  };
+}
+
+module.exports = {
+  extractSmart,
+  toSusanFormat,
+  buildExtractionPrompt
+};

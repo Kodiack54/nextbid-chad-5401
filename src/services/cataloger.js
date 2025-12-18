@@ -1,50 +1,165 @@
 /**
  * Chad Cataloger Service
- * Runs every 30 minutes to process raw session logs into structured knowledge
- *
- * Extracts:
- * - Todos (new and completed)
- * - Code changes
- * - Decisions made
- * - Knowledge/insights
- *
- * Sends to Susan for storage and doc updates
+ * Two-tier processing:
+ * - Quick Parse: Every 5 minutes - pattern matching, no AI
+ * - Full Catalog: Every 30 minutes - SMART AI extraction
  */
 
 const { from } = require('../lib/db');
-const { chat } = require('../lib/claude');
 const { Logger } = require('../lib/logger');
 const config = require('../lib/config');
+const { extractSmart, toSusanFormat } = require('../lib/smartExtractor');
 
 const logger = new Logger('Chad:Cataloger');
 
-// Track last processed timestamp per project
-const lastProcessed = new Map();
-
-// Cataloger interval (30 minutes)
-const CATALOG_INTERVAL_MS = 30 * 60 * 1000;
+// Intervals
+const QUICK_PARSE_INTERVAL_MS = 5 * 60 * 1000;   // 5 minutes
+const FULL_CATALOG_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
 /**
- * Start the cataloger background job
+ * Start the cataloger background jobs
  */
 function start() {
-  logger.info('Cataloger started', { intervalMs: CATALOG_INTERVAL_MS });
+  logger.info('Cataloger started (SMART MODE)', {
+    quickParseInterval: '5 minutes',
+    fullCatalogInterval: '30 minutes'
+  });
 
-  // Run immediately on start
-  setTimeout(() => runCatalog(), 5000);
+  // Quick parse: 5 min (no AI, just patterns)
+  setTimeout(() => runQuickParse(), 3000);
+  setInterval(() => runQuickParse(), QUICK_PARSE_INTERVAL_MS);
 
-  // Then every 30 minutes
-  setInterval(() => runCatalog(), CATALOG_INTERVAL_MS);
+  // Full catalog: 30 min (smart AI extraction)
+  setTimeout(() => runFullCatalog(), 10000);
+  setInterval(() => runFullCatalog(), FULL_CATALOG_INTERVAL_MS);
 }
 
 /**
- * Run a single catalog cycle
+ * Quick Parse - every 5 minutes, no AI
  */
-async function runCatalog() {
-  logger.info('Starting catalog cycle');
+async function runQuickParse() {
+  logger.info('Starting quick parse cycle');
 
   try {
-    // Get active and recently completed sessions
+    const { data: sessions, error } = await from('dev_ai_sessions')
+      .select('id, project_path, started_at, status')
+      .in('status', ['active', 'completed'])
+      .order('started_at', { ascending: false })
+      .limit(10);
+
+    if (error) throw error;
+    if (!sessions?.length) return;
+
+    for (const session of sessions) {
+      await quickParseSession(session);
+    }
+
+    logger.info('Quick parse complete', { sessions: sessions.length });
+  } catch (err) {
+    logger.error('Quick parse failed', { error: err.message });
+  }
+}
+
+/**
+ * Quick parse a single session (pattern matching only)
+ */
+async function quickParseSession(session) {
+  try {
+    const { data: messages, error } = await from('dev_ai_messages')
+      .select('role, content, created_at')
+      .eq('session_id', session.id)
+      .order('created_at', { ascending: false })
+      .limit(20);
+
+    if (error || !messages?.length) return;
+
+    // Quick pattern extraction - no AI
+    const quickData = {
+      keywords: extractKeywords(messages),
+      fileMentions: extractFileMentions(messages),
+      todoMentions: extractTodoMentions(messages),
+      errorMentions: extractErrorMentions(messages),
+      messageCount: messages.length
+    };
+
+    // Send to Susan's quick-parse endpoint
+    await sendQuickUpdateToSusan(session.id, session.project_path, quickData);
+
+  } catch (err) {
+    logger.error('Quick parse session failed', { error: err.message, sessionId: session.id });
+  }
+}
+
+// Pattern extraction functions (no AI)
+function extractKeywords(messages) {
+  const keywords = new Set();
+  const patterns = [
+    /\b(TODO|FIXME|BUG|HACK|NOTE|XXX)\b/gi,
+    /\b(error|warning|failed|success|completed)\b/gi,
+    /\b(created?|modified?|deleted?|updated?|added?|removed?)\b/gi
+  ];
+  for (const msg of messages) {
+    for (const pattern of patterns) {
+      const matches = msg.content?.match(pattern) || [];
+      matches.forEach(m => keywords.add(m.toLowerCase()));
+    }
+  }
+  return Array.from(keywords);
+}
+
+function extractFileMentions(messages) {
+  const files = new Set();
+  const pattern = /[\w\-\/]+\.(js|ts|tsx|jsx|json|css|scss|md|py|sql|env)\b/gi;
+  for (const msg of messages) {
+    const matches = msg.content?.match(pattern) || [];
+    matches.forEach(f => files.add(f));
+  }
+  return Array.from(files);
+}
+
+function extractTodoMentions(messages) {
+  const todos = [];
+  const pattern = /(?:TODO|TASK|NEED TO|SHOULD|MUST)[\s:]+([^\n.]{10,100})/gi;
+  for (const msg of messages) {
+    let match;
+    while ((match = pattern.exec(msg.content || '')) !== null) {
+      todos.push(match[1].trim());
+    }
+  }
+  return todos.slice(0, 10);
+}
+
+function extractErrorMentions(messages) {
+  const errors = [];
+  const pattern = /(?:error|failed|exception)[\s:]+([^\n]{10,150})/gi;
+  for (const msg of messages) {
+    let match;
+    while ((match = pattern.exec(msg.content || '')) !== null) {
+      errors.push(match[1].trim());
+    }
+  }
+  return errors.slice(0, 5);
+}
+
+async function sendQuickUpdateToSusan(sessionId, projectPath, quickData) {
+  try {
+    await fetch(`${config.SUSAN_URL}/api/quick-parse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, projectPath, quickData, parsedAt: new Date().toISOString() })
+    });
+  } catch (err) {
+    logger.warn('Failed to send quick update to Susan', { error: err.message });
+  }
+}
+
+/**
+ * Full Catalog - every 30 minutes with SMART AI extraction
+ */
+async function runFullCatalog() {
+  logger.info('Starting SMART catalog cycle');
+
+  try {
     const { data: sessions, error } = await from('dev_ai_sessions')
       .select('id, project_path, started_at, ended_at, status, last_cataloged_at')
       .in('status', ['active', 'completed'])
@@ -52,8 +167,7 @@ async function runCatalog() {
       .limit(20);
 
     if (error) throw error;
-
-    if (!sessions || sessions.length === 0) {
+    if (!sessions?.length) {
       logger.info('No sessions to catalog');
       return;
     }
@@ -62,18 +176,19 @@ async function runCatalog() {
       await catalogSession(session);
     }
 
-    logger.info('Catalog cycle complete', { sessionsProcessed: sessions.length });
+    logger.info('SMART catalog complete', { sessions: sessions.length });
   } catch (err) {
-    logger.error('Catalog cycle failed', { error: err.message });
+    logger.error('SMART catalog failed', { error: err.message });
   }
 }
 
+const runCatalog = runFullCatalog;
+
 /**
- * Catalog a single session
+ * Catalog a single session with SMART extraction
  */
 async function catalogSession(session) {
   try {
-    // Get messages since last catalog
     const lastCataloged = session.last_cataloged_at || session.started_at;
 
     const { data: messages, error } = await from('dev_ai_messages')
@@ -83,142 +198,100 @@ async function catalogSession(session) {
       .order('sequence_num', { ascending: true });
 
     if (error) throw error;
+    if (!messages || messages.length < 3) return;
 
-    if (!messages || messages.length < 3) {
-      // Not enough new messages to catalog
-      return;
-    }
-
-    logger.info('Cataloging session', {
+    logger.info('SMART cataloging session', {
       sessionId: session.id,
       projectPath: session.project_path,
       newMessages: messages.length
     });
 
-    // Build conversation text for extraction
+    // Build conversation text
     const conversationText = messages.map(m =>
       `${m.role.toUpperCase()}: ${m.content}`
     ).join('\n\n');
 
-    // Extract structured data using Claude Haiku
-    const extraction = await extractKnowledge(conversationText, session.project_path);
+    // Get previous context for continuity
+    const previousContext = await getPreviousContext(session.project_path);
 
-    if (extraction) {
-      // Send to Susan for storage
-      await sendToSusan(session.id, session.project_path, extraction);
+    // SMART extraction
+    const smartExtraction = await extractSmart(conversationText, session.project_path, previousContext);
 
-      // Update last cataloged timestamp
+    if (smartExtraction) {
+      // Convert to Susan's format (backward compatible)
+      const susanData = toSusanFormat(smartExtraction);
+
+      // Send to Susan
+      await sendToSusan(session.id, session.project_path, susanData);
+
+      // Store raw smart extraction for future AI use
+      await storeSmartExtraction(session.id, smartExtraction);
+
+      // Update last cataloged
       await from('dev_ai_sessions')
         .update({ last_cataloged_at: new Date().toISOString() })
         .eq('id', session.id);
 
-      logger.info('Session cataloged', {
+      logger.info('Session SMART cataloged', {
         sessionId: session.id,
-        todos: extraction.todos?.length || 0,
-        completedTodos: extraction.completedTodos?.length || 0,
-        knowledge: extraction.knowledge?.length || 0,
-        structure: extraction.structureChanges?.length || 0,
-        codeChanges: extraction.codeChanges?.length || 0,
-        commits: extraction.commits?.length || 0,
-        bugs: extraction.bugs?.length || 0,
-        apis: extraction.apis?.length || 0
+        workType: smartExtraction.sessionSummary?.workType,
+        outcome: smartExtraction.sessionSummary?.outcome,
+        problems: smartExtraction.problems?.length || 0,
+        decisions: smartExtraction.decisions?.length || 0,
+        discoveries: smartExtraction.discoveries?.length || 0
       });
     }
   } catch (err) {
-    logger.error('Session catalog failed', {
-      error: err.message,
-      sessionId: session.id
-    });
+    logger.error('Session catalog failed', { error: err.message, sessionId: session.id });
   }
 }
 
 /**
- * Use Claude Haiku to extract structured knowledge from conversation
- * IMPORTANT: Detects when user mentions a DIFFERENT project and routes accordingly
- * IMPORTANT: Extracts file/folder structure when user shares tree diagrams
+ * Get previous session context for continuity
  */
-async function extractKnowledge(conversationText, projectPath) {
-  const prompt = `Analyze this development conversation and extract structured information.
-
-CURRENT PROJECT: ${projectPath}
-
-CONVERSATION:
-${conversationText.slice(0, 12000)}
-
-Extract the following as JSON. Be thorough - extract ALL relevant information.
-
-IMPORTANT RULES:
-1. If user mentions a DIFFERENT project, include "targetProject" with that name
-2. If user shares a file/folder tree (like "├── folder/"), extract ALL items as structureChanges
-3. For structure trees, preserve the hierarchy - include parent_path for nested items
-4. Extract file purposes from context or comments in the tree
-
-{
-  "todos": [
-    { "title": "task title", "description": "details", "priority": "high|medium|low", "targetProject": "if mentioned" }
-  ],
-  "completedTodos": [
-    { "title": "task completed", "targetProject": "if mentioned" }
-  ],
-  "decisions": [
-    { "title": "what was decided", "rationale": "why", "targetProject": "if mentioned" }
-  ],
-  "knowledge": [
-    { "category": "code|architecture|feature|api|database|config|project", "title": "title", "summary": "what was learned", "targetProject": "if mentioned" }
-  ],
-  "codeChanges": [
-    { "file": "path/to/file", "action": "created|modified|deleted", "summary": "what changed" }
-  ],
-  "structureChanges": [
-    { "path": "full/path/to/item", "name": "filename or folder name", "type": "file|folder|module", "action": "created|documented|modified|deleted", "purpose": "what this file/folder does", "notes": "additional context", "parent_path": "parent folder path if nested" }
-  ],
-  "commits": [
-    { "hash": "if mentioned", "message": "commit message", "filesChanged": ["list", "of", "files"] }
-  ],
-  "bugs": [
-    { "title": "bug description", "severity": "high|medium|low", "file": "related file", "status": "open|fixed" }
-  ],
-  "apis": [
-    { "endpoint": "/api/path", "method": "GET|POST|etc", "description": "what it does" }
-  ],
-  "ports": [
-    { "port": 3000, "service": "service name", "description": "what runs here" }
-  ]
-}
-
-STRUCTURE EXTRACTION RULES:
-- When you see tree diagrams (├──, └──, │), extract EVERY file and folder shown
-- For folders ending with /, set type: "folder"
-- For .js, .ts, .json files, set type: "file"
-- For folders containing index.js or with MVC structure, set type: "module"
-- Extract purpose from inline comments like "# Main entry" or "(categories.json, config.json)"
-- Group related items under their parent folder
-
-BUG VS KNOWLEDGE RULES:
-- Bugs, issues, errors, problems, and fixes go in the "bugs" array ONLY - NOT in knowledge
-- Knowledge is for learning, architecture, features, configs, ports - NOT bugs
-- If something is a bug report or bug fix, put it in bugs with status "open" or "fixed"
-
-Return valid JSON only. Include empty arrays [] for categories with no items.`;
-
+async function getPreviousContext(projectPath) {
   try {
-    const response = await chat(prompt, { extractionMode: true });
+    const { data } = await from('dev_ai_smart_extractions')
+      .select('continuity, session_summary')
+      .eq('project_path', projectPath)
+      .order('created_at', { ascending: false })
+      .limit(1);
 
-    // Parse JSON from response
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
+    if (data?.[0]) {
+      return `Previous work: ${data[0].session_summary?.mainGoal || 'Unknown'}
+In progress: ${data[0].continuity?.inProgress || 'None'}
+Blockers: ${(data[0].continuity?.blockers || []).join(', ') || 'None'}`;
     }
-
     return null;
-  } catch (err) {
-    logger.error('Knowledge extraction failed', { error: err.message });
+  } catch {
     return null;
   }
 }
 
 /**
- * Send extracted data to Susan for storage and doc updates
+ * Store smart extraction for future AI reference
+ */
+async function storeSmartExtraction(sessionId, extraction) {
+  try {
+    await from('dev_ai_smart_extractions').insert({
+      session_id: sessionId,
+      project_path: extraction.sessionSummary?.projectPath,
+      session_summary: extraction.sessionSummary,
+      continuity: extraction.continuity,
+      problems: extraction.problems,
+      decisions: extraction.decisions,
+      discoveries: extraction.discoveries,
+      dependencies: extraction.dependencies,
+      created_at: new Date().toISOString()
+    });
+  } catch (err) {
+    // Table might not exist yet - that's ok
+    logger.debug('Could not store smart extraction', { error: err.message });
+  }
+}
+
+/**
+ * Send to Susan
  */
 async function sendToSusan(sessionId, projectPath, extraction) {
   try {
@@ -237,18 +310,15 @@ async function sendToSusan(sessionId, projectPath, extraction) {
       throw new Error(`Susan responded with ${response.status}`);
     }
 
-    const result = await response.json();
-    logger.info('Sent to Susan', { sessionId, result });
-    return result;
+    return await response.json();
   } catch (err) {
-    logger.error('Failed to send to Susan', { error: err.message, sessionId });
-    // Don't throw - Susan might be unavailable
+    logger.error('Failed to send to Susan', { error: err.message });
     return null;
   }
 }
 
 /**
- * Force catalog a specific session (for manual triggers)
+ * Force catalog now
  */
 async function catalogNow(sessionId) {
   const { data: session, error } = await from('dev_ai_sessions')
@@ -256,9 +326,7 @@ async function catalogNow(sessionId) {
     .eq('id', sessionId)
     .single();
 
-  if (error || !session) {
-    throw new Error('Session not found');
-  }
+  if (error || !session) throw new Error('Session not found');
 
   await catalogSession(session);
   return { success: true, sessionId };
@@ -266,6 +334,8 @@ async function catalogNow(sessionId) {
 
 module.exports = {
   start,
+  runQuickParse,
+  runFullCatalog,
   runCatalog,
   catalogNow
 };
