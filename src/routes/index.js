@@ -21,7 +21,7 @@ app.use(express.json());
 app.use('/', healthRoutes);
 app.use('/api', sessionsRoutes);
 app.use('/api', chatRoutes);
-app.use('/api', catalogRoutes);
+// app.use('/api', catalogRoutes); // DISABLED - Jen handles processing
 app.use('/api/sources', sourcesRoutes);
 app.use('/api/extractions', extractionsRoutes);
 app.use('/api/team-chat', teamChatRoutes);

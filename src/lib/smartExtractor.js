@@ -9,6 +9,36 @@ const { Logger } = require('./logger');
 const logger = new Logger('Chad:SmartExtractor');
 
 /**
+ * Validate a todo looks real (not garbage from terminal output)
+ */
+function isValidTodo(task) {
+  if (!task || task.length < 5) return false;
+  if (task.length > 200) return false;
+  const garbagePatterns = [
+    /\|/,                      // Table output
+    /\{/,                      // JSON fragments
+    /\}/,
+    /\\"/,                    // Escaped quotes
+    /"description":/,          // JSON field names
+    /"status":/,
+    /"created_at":/,
+    /"server_path":/,
+    /\[\d+\]/,              // Array indices
+    /match\[/,                // Code
+    /^\s*[\)\]\}\,\;]/,  // Starts with closing syntax
+    /^\s*[a-f0-9-]{36}/,      // UUID
+    /sort_order/i,
+    /completed_at/i,
+    /External Claude/,         // Terminal markers
+  ];
+  for (const pattern of garbagePatterns) {
+    if (pattern.test(task)) return false;
+  }
+  return true;
+}
+
+
+/**
  * Clean up common JSON issues from AI responses
  */
 function cleanJsonResponse(text) {
@@ -74,7 +104,7 @@ function parseJsonSafe(text) {
     // Extract todos
     const todoMatches = [...text.matchAll(/"task"\s*:\s*"([^"]+)"/g)];
     for (const match of todoMatches) {
-      result.todos.push({ task: match[1], priority: 'medium', context: '' });
+      if (isValidTodo(match[1])) { result.todos.push({ task: match[1], priority: 'medium', context: '' }); }
     }
     
     // Extract discoveries/knowledge

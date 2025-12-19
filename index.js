@@ -46,13 +46,13 @@ async function start() {
 
   // 6. Start cataloger background job (every 30 min)
   const cataloger = require('./src/services/cataloger');
-  cataloger.start();
+  // cataloger.start(); // DISABLED - Jen handles processing now
 
   // 7. Start source watcher (monitors Server Claude)
   const sourceWatcher = require('./src/services/sourceWatcher');
   await sourceWatcher.initialize();
   logger.info('Source watcher initialized');
-  logger.info('Cataloger background job started');
+  logger.info('Cataloger DISABLED - Jen handles processing');
 
   // 7. Ready
   logger.info('Chad Transcriber ready', {

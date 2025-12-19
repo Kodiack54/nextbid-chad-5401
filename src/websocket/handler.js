@@ -7,7 +7,7 @@ const WebSocket = require('ws');
 const { Logger } = require('../lib/logger');
 const sessionManager = require('../services/sessionManager');
 const terminalStream = require('./terminalStream');
-const { stripAnsi } = require('../../../shared/stripAnsi');
+const stripAnsi = require('../../../shared/stripAnsi');
 
 const logger = new Logger('Chad:WebSocket');
 
