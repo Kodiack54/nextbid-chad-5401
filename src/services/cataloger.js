@@ -43,7 +43,7 @@ async function runQuickParse() {
 
   try {
     const { data: sessions, error } = await from('dev_ai_sessions')
-      .select('id, project_path, started_at, status')
+      .select('id, project_id, started_at, status')
       .in('status', ['active', 'completed'])
       .order('started_at', { ascending: false })
       .limit(10);
@@ -66,7 +66,7 @@ async function runQuickParse() {
  */
 async function quickParseSession(session) {
   try {
-    const { data: messages, error } = await from('dev_ai_messages')
+    const { data: messages, error } = await from('dev_ai_staging')
       .select('role, content, created_at')
       .eq('session_id', session.id)
       .order('created_at', { ascending: false })
@@ -84,7 +84,7 @@ async function quickParseSession(session) {
     };
 
     // Send to Susan's quick-parse endpoint
-    await sendQuickUpdateToSusan(session.id, session.project_path, quickData);
+    await sendQuickUpdateToSusan(session.id, session.project_id, quickData);
 
   } catch (err) {
     logger.error('Quick parse session failed', { error: err.message, sessionId: session.id });
@@ -162,7 +162,7 @@ async function runFullCatalog() {
 
   try {
     const { data: sessions, error } = await from('dev_ai_sessions')
-      .select('id, project_path, started_at, ended_at, status, last_cataloged_at')
+      .select('id, project_id, started_at, ended_at, status, last_cataloged_at')
       .in('status', ['active', 'completed'])
       .order('started_at', { ascending: false })
       .limit(20);
@@ -192,18 +192,18 @@ async function catalogSession(session) {
   try {
     const lastCataloged = session.last_cataloged_at || session.started_at;
 
-    const { data: messages, error } = await from('dev_ai_messages')
-      .select('role, content, created_at, sequence_num')
+    const { data: messages, error } = await from('dev_ai_staging')
+      .select('role, content, created_at')
       .eq('session_id', session.id)
       .gt('created_at', lastCataloged)
-      .order('sequence_num', { ascending: true });
+      .order('created_at', { ascending: true });
 
     if (error) throw error;
     if (!messages || messages.length < 3) return;
 
     logger.info('SMART cataloging session', {
       sessionId: session.id,
-      projectPath: session.project_path,
+      projectPath: session.project_id,
       newMessages: messages.length
     });
 
@@ -213,17 +213,17 @@ async function catalogSession(session) {
     ).join('\n\n');
 
     // Get previous context for continuity
-    const previousContext = await getPreviousContext(session.project_path);
+    const previousContext = await getPreviousContext(session.project_id);
 
     // SMART extraction
-    const smartExtraction = await extractWithContext(conversationText, { projectPath: session.project_path, previousContext });
+    const smartExtraction = await extractWithContext(conversationText, { projectPath: session.project_id, previousContext });
 
     if (smartExtraction) {
       // Convert to Susan's format (backward compatible)
       const susanData = toSusanFormatWithRouting(smartExtraction);
 
       // Send to Susan
-      await sendToSusan(session.id, session.project_path, susanData);
+      await sendToSusan(session.id, session.project_id, susanData);
 
       // Store raw smart extraction for future AI use
       await storeSmartExtraction(session.id, smartExtraction);
@@ -254,7 +254,7 @@ async function getPreviousContext(projectPath) {
   try {
     const { data } = await from('dev_ai_smart_extractions')
       .select('continuity, session_summary')
-      .eq('project_path', projectPath)
+      .eq('project_id', projectPath)
       .order('created_at', { ascending: false })
       .limit(1);
 
@@ -276,7 +276,7 @@ async function storeSmartExtraction(sessionId, extraction) {
   try {
     await from('dev_ai_smart_extractions').insert({
       session_id: sessionId,
-      project_path: extraction.sessionSummary?.projectPath,
+      project_id: extraction.sessionSummary?.projectPath,
       session_summary: extraction.sessionSummary,
       continuity: extraction.continuity,
       problems: extraction.problems,
@@ -323,7 +323,7 @@ async function sendToSusan(sessionId, projectPath, extraction) {
  */
 async function catalogNow(sessionId) {
   const { data: session, error } = await from('dev_ai_sessions')
-    .select('id, project_path, started_at, ended_at, status, last_cataloged_at')
+    .select('id, project_id, started_at, ended_at, status, last_cataloged_at')
     .eq('id', sessionId)
     .single();
 

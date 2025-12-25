@@ -36,12 +36,12 @@ router.post('/chat', async (req, res) => {
   try {
     // Get recent sessions with more detail
     const { data: recentSessions } = await from('dev_ai_sessions')
-      .select('id, project_path, summary, started_at, ended_at, status, last_cataloged_at')
+      .select('id, project_id, summary, started_at, ended_at, status, last_cataloged_at')
       .order('started_at', { ascending: false })
       .limit(10);
 
     // Get message counts for context
-    const { data: messages } = await from('dev_ai_messages')
+    const { data: messages } = await from('dev_ai_staging')
       .select('session_id, role')
       .order('created_at', { ascending: false })
       .limit(100);
@@ -62,7 +62,7 @@ router.post('/chat', async (req, res) => {
           const msgCount = messageCounts[s.id] || 0;
           const timeAgo = getTimeAgo(s.started_at);
           const lastCataloged = s.last_cataloged_at ? getTimeAgo(s.last_cataloged_at) : 'never';
-          return `- ${s.project_path.split('/').pop()}: ${msgCount} messages, started ${timeAgo}, last cataloged ${lastCataloged} (${s.status})`;
+          return `- ${s.project_id.split('/').pop()}: ${msgCount} messages, started ${timeAgo}, last cataloged ${lastCataloged} (${s.status})`;
         }).join('\n')}`
       : 'No sessions transcribed yet.';
 

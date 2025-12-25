@@ -19,7 +19,7 @@ async function storeTodos(sessionId, projectPath, todos) {
     try {
       await from('dev_ai_smart_extractions').insert({
         session_id: sessionId,
-        project_path: projectPath,
+        project_id: projectPath,
         extraction_type: 'todo',
         category: 'todo',
         content: typeof todo === 'string' ? todo : todo.content || JSON.stringify(todo),
@@ -47,7 +47,7 @@ async function storeKnowledge(sessionId, projectPath, items) {
     try {
       await from('dev_ai_smart_extractions').insert({
         session_id: sessionId,
-        project_path: projectPath,
+        project_id: projectPath,
         extraction_type: 'knowledge',
         category: item.category || 'general',
         content: typeof item === 'string' ? item : item.content || JSON.stringify(item),
@@ -78,7 +78,7 @@ async function storeErrors(sessionId, projectPath, errors) {
     try {
       await from('dev_ai_smart_extractions').insert({
         session_id: sessionId,
-        project_path: projectPath,
+        project_id: projectPath,
         extraction_type: 'error',
         category: 'issue',
         content: typeof error === 'string' ? error : error.message || JSON.stringify(error),

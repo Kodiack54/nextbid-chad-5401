@@ -15,7 +15,7 @@ const logger = new Logger('Chad:Sessions');
 router.get('/sessions', async (req, res) => {
   try {
     const { data, error } = await from('dev_ai_sessions')
-      .select('id, project_path, started_at, status')
+      .select('id, project_id, started_at, status')
       .eq('status', 'active')
       .order('started_at', { ascending: false });
 
@@ -30,7 +30,7 @@ router.get('/sessions', async (req, res) => {
 // Get session messages
 router.get('/sessions/:id/messages', async (req, res) => {
   try {
-    const { data, error } = await from('dev_ai_messages')
+    const { data, error } = await from('dev_ai_staging')
       .select('role, content, created_at')
       .eq('session_id', req.params.id)
       .order('sequence_num', { ascending: true });
@@ -56,7 +56,7 @@ router.post('/message', async (req, res) => {
 
   // Store directly if session not in memory
   try {
-    const { data: maxData } = await from('dev_ai_messages')
+    const { data: maxData } = await from('dev_ai_staging')
       .select('sequence_num')
       .eq('session_id', sessionId)
       .order('sequence_num', { ascending: false })
@@ -65,7 +65,7 @@ router.post('/message', async (req, res) => {
 
     const seq = (maxData?.sequence_num || 0) + 1;
 
-    const { error } = await from('dev_ai_messages').insert({
+    const { error } = await from('dev_ai_staging').insert({
       session_id: sessionId,
       role,
       content,
@@ -109,8 +109,8 @@ router.get('/session/recover', async (req, res) => {
 
     // Otherwise get most recent session from database
     const { data: sessions, error: sessionsError } = await from('dev_ai_sessions')
-      .select('id, project_path, started_at, ended_at, status, summary')
-      .eq('project_path', projectPath)
+      .select('id, project_id, started_at, ended_at, status, summary')
+      .eq('project_id', projectPath)
       .order('started_at', { ascending: false })
       .limit(1);
 
@@ -126,7 +126,7 @@ router.get('/session/recover', async (req, res) => {
     const session = sessions[0];
 
     // Get messages from the session
-    const { data: messages, error: messagesError } = await from('dev_ai_messages')
+    const { data: messages, error: messagesError } = await from('dev_ai_staging')
       .select('role, content, created_at, sequence_num')
       .eq('session_id', session.id)
       .order('sequence_num', { ascending: true });
@@ -136,7 +136,7 @@ router.get('/session/recover', async (req, res) => {
     res.json({
       status: session.status,
       sessionId: session.id,
-      projectPath: session.project_path,
+      projectPath: session.project_id,
       startedAt: session.started_at,
       endedAt: session.ended_at,
       storedSummary: session.summary,
@@ -194,12 +194,12 @@ router.get('/recent', async (req, res) => {
 
   try {
     let query = from('dev_ai_sessions')
-      .select('id, project_path, started_at, ended_at')
+      .select('id, project_id, started_at, ended_at')
       .order('started_at', { ascending: false })
       .limit(limit);
 
     if (projectPath) {
-      query = query.eq('project_path', projectPath);
+      query = query.eq('project_id', projectPath);
     }
 
     const { data: sessions, error: sessionsError } = await query;
@@ -207,14 +207,14 @@ router.get('/recent', async (req, res) => {
 
     // Get messages for each session
     const results = await Promise.all(sessions.map(async (session) => {
-      const { data: messages } = await from('dev_ai_messages')
+      const { data: messages } = await from('dev_ai_staging')
         .select('role, content, created_at')
         .eq('session_id', session.id)
         .order('sequence_num', { ascending: true });
 
       return {
         session_id: session.id,
-        project_path: session.project_path,
+        project_id: session.project_id,
         started_at: session.started_at,
         ended_at: session.ended_at,
         messages: messages || []
@@ -236,7 +236,7 @@ router.get('/sessions/recent', async (req, res) => {
   
   try {
     const { data, error } = await from('dev_ai_sessions')
-      .select('id, project_path, started_at, ended_at, status, source_type, source_name, message_count, raw_content')
+      .select('id, project_id, started_at, ended_at, status, source_type, source_name, message_count, raw_content')
       .order('started_at', { ascending: false })
       .limit(limit);
 
@@ -252,7 +252,7 @@ router.get('/sessions/recent', async (req, res) => {
       source_type: s.source_type,
       source_name: s.source_name,
       message_count: s.message_count || 0,
-      project_path: s.project_path,
+      project_id: s.project_id,
       needs_review: s.status === 'pending_review',
       processed_by_susan: s.status === 'processed'
     }));
@@ -263,4 +263,70 @@ router.get('/sessions/recent', async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+module.exports = router;
+
+/**
+
+/**
+ * POST /api/external-claude - Receive messages from Windows file watcher
+ * Independent endpoint for external Claude capture
+ */
+router.post('/external-claude', async (req, res) => {
+  const { role, content, session_id, timestamp, source, cwd, project, display_name } = req.body;
+
+  if (!content || !session_id) {
+    return res.status(400).json({ success: false, error: 'content and session_id required' });
+  }
+
+  try {
+    // Use source_name to store the external session_id for lookup
+    let { data: session } = await from('dev_ai_sessions')
+      .select('id, raw_content, message_count')
+      .eq('source_name', session_id)
+      .eq('source_type', 'external_claude')
+      .single();
+
+    if (!session) {
+      // Create new session with friendly display name in summary
+      const { data: newSession, error: createError } = await from('dev_ai_sessions')
+        .insert({
+          source_type: 'external_claude',
+          source_name: session_id,
+          summary: display_name || 'Claude External',
+          project_id: cwd || project || 'external-unknown',
+          status: 'active',
+          started_at: timestamp || new Date().toISOString(),
+          raw_content: '',
+          message_count: 0
+        })
+        .select()
+        .single();
+
+      if (createError) throw createError;
+      session = newSession;
+      logger.info('Created external session', { sessionId: session.id, displayName: display_name });
+    }
+
+    // Append to raw_content
+    const separator = session.raw_content ? '\n\n---\n\n' : '';
+    const newContent = separator + (role || 'unknown').toUpperCase() + ': ' + content;
+
+    const { error: updateError } = await from('dev_ai_sessions')
+      .update({
+        raw_content: (session.raw_content || '') + newContent,
+        last_message_at: new Date().toISOString(),
+        status: 'active',
+        message_count: (session.message_count || 0) + 1
+      })
+      .eq('id', session.id);
+
+    if (updateError) throw updateError;
+
+    res.json({ success: true, sessionId: session.id });
+  } catch (err) {
+    logger.error('External claude capture failed', { error: err.message, sessionId: session_id });
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

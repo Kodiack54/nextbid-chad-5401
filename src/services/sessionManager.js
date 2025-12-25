@@ -37,11 +37,11 @@ class SessionState {
       // Write to staging table - Jen will process this
       const { error } = await from('dev_ai_staging').insert({
         session_id: this.sessionId,
-        project_path: this.projectPath,
+        project_id: this.projectPath,
         role,
         content: content.trim(),
         source: 'chad-5401',
-        captured_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
         processed: false
       });
 
@@ -83,7 +83,7 @@ async function createSession(projectPath, userId, metadata = {}) {
   try {
     const { data, error } = await from('dev_ai_sessions')
       .insert({
-        project_path: projectPath,
+        project_id: projectPath,
         user_id: userId,
         terminal_port: 5400,
         status: 'active',

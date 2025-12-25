@@ -57,7 +57,7 @@ router.post('/extract/:sessionId', async (req, res) => {
     
     // Get session with raw_content
     const { data: session, error } = await from('dev_ai_sessions')
-      .select('id, raw_content, project_path')
+      .select('id, raw_content, project_id')
       .eq('id', sessionId)
       .single();
     
@@ -67,7 +67,7 @@ router.post('/extract/:sessionId', async (req, res) => {
     
     const results = await extractionStore.extractAndStoreFromDump(
       session.id,
-      session.project_path || '/var/www/Studio/ai-team/ai-chad-5401',
+      session.project_id || '/var/www/Studio/ai-team/ai-chad-5401',
       session.raw_content
     );
     

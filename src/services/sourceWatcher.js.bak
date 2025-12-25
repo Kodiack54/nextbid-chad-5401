@@ -89,7 +89,7 @@ async function initialize() {
   }
 
   // Connect to Internal Claude WebSocket
-  if (process.env.ENABLE_INTERNAL_CLAUDE !== "false") { connectToInternalClaude(); } else { logger.info("Internal Claude watcher disabled by config"); }
+  connectToInternalClaude();
 
   // Start the dump scheduler
   startDumpScheduler();
@@ -176,15 +176,6 @@ async function pollChatSystems() {
 
       if (response.ok) {
         const data = await response.json();
-        // Filter: only log if there are actual messages with content
-        let hasRealContent = false;
-        if (Array.isArray(data)) {
-          hasRealContent = data.some(item => item.messages && item.messages.length > 0);
-        } else if (data.messages) {
-          hasRealContent = data.messages.length > 0;
-        } else if (data.content) {
-          hasRealContent = data.content.trim().length > 0;
-        }
         if (data && (data.messages || data.length > 0)) {
           const content = JSON.stringify(data, null, 2);
           buffer.append(`\n--- ${endpoint.name} ---\n${content}\n`);
@@ -244,10 +235,10 @@ async function performDump(sourceId, sourceName) {
     // Create session record
     const { data: session, error: sessionError } = await from('dev_ai_sessions')
       .insert({
-        project_id: projectPath,
+        project_path: projectPath,
         source_type: sourceId,
         source_name: sourceName,
-        status: 'active',
+        status: 'pending_review',
         raw_content: content,
         message_count: count,
         started_at: buffer.lastActivity || new Date().toISOString()
