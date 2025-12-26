@@ -1,11 +1,13 @@
 /**
  * Chad Multi-Source Watcher
- * Actively monitors 4 sources and dumps on staggered 30-min schedule
+ * Monitors 3 sources and dumps on staggered 15-min schedule
  *
- * Schedule (every 10 mins, one source dumps):
- *   :00, :30 - External Claude (local terminals connecting to dev-studio)
- *   :10, :40 - Chat systems (Susan + Chad chats)
- *   :20, :50 - Internal Claude (Server Claude at :5400)
+ * Schedule (rotating every 5 mins, each source dumps every 15 min):
+ *   :00, :15, :30, :45 - External Claude (local terminals)
+ *   :05, :20, :35, :50 - Chat Systems (Susan + Chad chats)
+ *   :10, :25, :40, :55 - Internal Claude (Server Claude at :5400)
+ *
+ * Jen picks up 6 dumps every 30 min (2 per source)
  */
 
 const WebSocket = require('ws');
@@ -15,20 +17,20 @@ const config = require('../lib/config');
 
 const logger = new Logger('Chad:SourceWatcher');
 
-// Source definitions - dumps every 5 min, staggered to avoid conflicts
+// Source definitions - each dumps every 15 min, staggered by 5 min
 const SOURCES = {
   EXTERNAL_CLAUDE: {
     id: 'external_claude',
     name: 'External Claude (Local)',
     type: 'websocket',
-    dumpMinutes: [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55], // Every 5 min at :00
+    dumpMinutes: [0, 15, 30, 45],
     description: 'Local Claude Code terminals'
   },
   CHAT_SYSTEMS: {
     id: 'chat_systems',
     name: 'Chat Systems',
     type: 'api_poll',
-    dumpMinutes: [2, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57], // Every 5 min at :02
+    dumpMinutes: [5, 20, 35, 50],
     endpoints: [
       { name: 'susan_chat', url: `${config.SUSAN_URL}/api/chat/recent` },
       { name: 'chad_chat', url: `http://localhost:${config.PORT}/api/recent` }
@@ -40,7 +42,7 @@ const SOURCES = {
     name: 'Internal Claude (Server)',
     type: 'websocket',
     url: process.env.CLAUDE_SERVER_WS || 'ws://localhost:5400?mode=monitor',
-    dumpMinutes: [4, 9, 14, 19, 24, 29, 34, 39, 44, 49, 54, 59], // Every 5 min at :04
+    dumpMinutes: [10, 25, 40, 55],
     description: 'Server-side Claude terminal at :5400'
   }
 };
@@ -89,7 +91,11 @@ async function initialize() {
   }
 
   // Connect to Internal Claude WebSocket
-  if (process.env.ENABLE_INTERNAL_CLAUDE !== "false") { connectToInternalClaude(); } else { logger.info("Internal Claude watcher disabled by config"); }
+  if (process.env.ENABLE_INTERNAL_CLAUDE !== 'false') {
+    connectToInternalClaude();
+  } else {
+    logger.info('Internal Claude watcher disabled by config');
+  }
 
   // Start the dump scheduler
   startDumpScheduler();
@@ -124,14 +130,12 @@ function connectToInternalClaude() {
             buffer.append(msg.data);
             buffer.userId = msg.userId || buffer.userId;
             buffer.projectPath = msg.projectPath || buffer.projectPath;
-            logger.debug('Monitor output received', { sessionId: msg.sessionId, userId: msg.userId, projectPath: msg.projectPath, dataLen: msg.data.length });
             return;
           } else if (msg.type === 'monitor_connected') {
             logger.info('Connected as monitor to Server Claude', { activeSessions: msg.activeSessions });
             return;
           }
         } catch {}
-        // Original handler below
         try {
           const msg = JSON.parse(data.toString());
           if (msg.type === 'output' && msg.data) {
@@ -176,15 +180,6 @@ async function pollChatSystems() {
 
       if (response.ok) {
         const data = await response.json();
-        // Filter: only log if there are actual messages with content
-        let hasRealContent = false;
-        if (Array.isArray(data)) {
-          hasRealContent = data.some(item => item.messages && item.messages.length > 0);
-        } else if (data.messages) {
-          hasRealContent = data.messages.length > 0;
-        } else if (data.content) {
-          hasRealContent = data.content.trim().length > 0;
-        }
         if (data && (data.messages || data.length > 0)) {
           const content = JSON.stringify(data, null, 2);
           buffer.append(`\n--- ${endpoint.name} ---\n${content}\n`);
@@ -208,7 +203,6 @@ function startDumpScheduler() {
     // Check each source's dump schedule
     for (const [key, source] of Object.entries(SOURCES)) {
       if (source.dumpMinutes.includes(minute)) {
-        // Only dump if we haven't already this minute
         const buffer = watchers.get(source.id);
         if (buffer && buffer.hasContent()) {
           await performDump(source.id, source.name);
@@ -220,7 +214,7 @@ function startDumpScheduler() {
     if (minute % 5 === 0) {
       await pollChatSystems();
     }
-  }, 60000); // Check every minute
+  }, 60000);
 
   logger.info('Dump scheduler started');
 }
@@ -238,10 +232,9 @@ async function performDump(sourceId, sourceName) {
   const { content, count } = buffer.clear();
 
   try {
-    // Use buffer's projectPath if available, otherwise default to Studio
     const projectPath = buffer.projectPath || '/var/www/Studio/ai-team/ai-chad-5401';
 
-    // Create session record
+    // Create session record - Jen will pick this up
     const { data: session, error: sessionError } = await from('dev_ai_sessions')
       .insert({
         project_id: projectPath,
@@ -257,53 +250,18 @@ async function performDump(sourceId, sourceName) {
 
     if (sessionError) throw sessionError;
 
-    // Run extraction on the raw content
-    const extractionStore = require('./extractionStore');
-    const extractions = await extractionStore.extractAndStoreFromDump(
-      session.id,
-      projectPath,
-      content
-    );
-
-    logger.info('Dump created with extractions', {
+    logger.info('Dump created', {
       sessionId: session.id,
       source: sourceName,
       contentLength: content.length,
-      messageCount: count,
-      extractions
+      messageCount: count
     });
-
-    // Notify Susan that there's a new dump to process
-    await notifySusan(session.id, sourceId, sourceName);
 
     return session.id;
   } catch (err) {
     logger.error('Dump failed', { error: err.message, source: sourceName });
-    // Put content back in buffer
     buffer.buffer = content + buffer.buffer;
     return null;
-  }
-}
-
-/**
- * Notify Susan of new dump to process
- */
-async function notifySusan(sessionId, sourceId, sourceName) {
-  try {
-    await fetch(`${config.SUSAN_URL}/api/process-dump`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sessionId,
-        sourceId,
-        sourceName,
-        timestamp: new Date().toISOString()
-      })
-    });
-    logger.info('Susan notified of new dump', { sessionId });
-  } catch (err) {
-    // Susan might not be running - that's ok, she'll pick it up later
-    logger.warn('Could not notify Susan', { error: err.message });
   }
 }
 
@@ -343,7 +301,6 @@ async function forceDump(sourceId) {
     throw new Error(`Unknown source: ${sourceId}`);
   }
 
-  // Poll chat systems first if that's what we're dumping
   if (sourceId === 'chat_systems') {
     await pollChatSystems();
   }
@@ -352,13 +309,13 @@ async function forceDump(sourceId) {
 }
 
 /**
- * Get pending dumps that Susan hasn't processed yet
+ * Get pending dumps that Jen hasn't processed yet
  */
 async function getPendingDumps() {
   try {
     const { data, error } = await from('dev_ai_sessions')
       .select('id, source_type, source_name, status, started_at, message_count')
-      .eq('status', 'pending_review')
+      .eq('status', 'active')
       .order('started_at', { ascending: false });
 
     if (error) throw error;

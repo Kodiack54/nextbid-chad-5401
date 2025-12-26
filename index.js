@@ -2,8 +2,8 @@
  * Chad - AI Transcriber
  * Port 5401
  *
- * Logs and transcribes Claude Code terminal conversations.
- * Extracts human/assistant messages and stores them for Susan to catalog.
+ * Captures Claude Code terminal conversations from 3 sources.
+ * Dumps raw content to dev_ai_sessions every 15 min for Jen to process.
  */
 
 require('dotenv').config();
@@ -26,38 +26,25 @@ async function start() {
   await sessionManager.initialize();
   logger.info('Session manager initialized');
 
-  // 3. Discover extractors
-  const extractorRegistry = require('./src/extractors/registry');
-  await extractorRegistry.discover();
-  logger.info(`Loaded ${extractorRegistry.count()} extractors`, {
-    extractors: extractorRegistry.list().map(e => e.name)
-  });
-
-  // 4. Start HTTP server
+  // 3. Start HTTP server
   const app = require('./src/routes');
   const server = app.listen(config.PORT, () => {
     logger.info(`Chad HTTP server listening on port ${config.PORT}`);
   });
 
-  // 5. Attach WebSocket handler
+  // 4. Attach WebSocket handler
   const wsHandler = require('./src/websocket/handler');
   wsHandler.attach(server);
   logger.info('WebSocket handler attached');
 
-  // 6. Start cataloger background job (every 30 min)
-  const cataloger = require('./src/services/cataloger');
-  // cataloger.start(); // DISABLED - Jen handles processing now
-
-  // 7. Start source watcher (monitors Server Claude)
+  // 5. Start source watcher (monitors 3 sources, dumps every 15 min)
   const sourceWatcher = require('./src/services/sourceWatcher');
   await sourceWatcher.initialize();
   logger.info('Source watcher initialized');
-  logger.info('Cataloger DISABLED - Jen handles processing');
 
-  // 7. Ready
+  // Ready
   logger.info('Chad Transcriber ready', {
     port: config.PORT,
-    extractors: extractorRegistry.count(),
     pid: process.pid
   });
 
@@ -65,7 +52,6 @@ async function start() {
   process.on('SIGTERM', async () => {
     logger.info('SIGTERM received, shutting down...');
 
-    // End all active sessions
     const sessions = sessionManager.getAllSessions();
     for (const session of sessions) {
       await session.endSession();
