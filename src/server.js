@@ -180,9 +180,35 @@ function isHomePath(p) {
   return c.includes('/home/') || c.includes('/root/') || c.endsWith('/root') || c.includes('\\users\\') || /^[a-z]:\\users\\/i.test(c);
 }
 
+// Low-trust slugs that transcripts-9500 sometimes sets incorrectly
+const LOW_TRUST_SLUGS = new Set(['ai-team', 'terminal', 'unassigned', 'unknown', 'default', 'studio', 'www']);
+
+// Normalize partial slugs to full slugs with ports
+const SLUG_PORT_MAP = {
+  'ai-chad': 'ai-chad-5401',
+  'ai-jen': 'ai-jen-5402',
+  'ai-susan': 'ai-susan-5403',
+  'ai-clair': 'ai-clair-5404',
+  'ai-jason': 'ai-jason-5408',
+  'ai-mike': 'ai-mike-5405',
+  'ai-tiffany': 'ai-tiffany-5406',
+  'ai-ryan': 'ai-ryan-5407',
+  'kodiack-dashboard': 'kodiack-dashboard-5500',
+  'terminal-server': 'terminal-server-5400',
+};
+
+function normalizeSlug(slug) {
+  if (!slug) return slug;
+  return SLUG_PORT_MAP[slug] || slug;
+}
+
 function resolveProjectSlug(win, cwd) {
-  if (win.project_slug && win.project_slug !== 'unassigned') {
-    return { slug: win.project_slug, reason: 'transcript', port: win.team_port };
+  // Trust transcript slug UNLESS it's in the low-trust list
+  if (win.project_slug && !LOW_TRUST_SLUGS.has(win.project_slug)) {
+    return { slug: normalizeSlug(win.project_slug), reason: 'transcript', port: win.team_port };
+  }
+  if (win.project_slug && LOW_TRUST_SLUGS.has(win.project_slug)) {
+    logger.warn('Ignoring low-trust transcript slug', { slug: win.project_slug, session_file: (win.session_file || '').substring(0, 80) });
   }
   if (cwd && !isHomePath(cwd)) {
     const routing = parseRoutingFromCwd(cwd);
